@@ -13,6 +13,7 @@ import selectors
 import shlex
 import shutil
 import signal
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,34 @@ CABINET_SHA256 = '260b0a755db14cf01bccb7cae1da15feb1b25eb2237f126a469e12a9404415
 VC_URL = 'https://aka.ms/vc14/vc_redist.x64.exe'
 WEBVIEW_URL = 'https://go.microsoft.com/fwlink/?linkid=2124701'
 HELPERS = ('roblox-compression.py', 'cursor-visibility.py', 'prepare-proton.py', 'lynrt.dll', 'cursor-state.exe')
+
+
+# The frozen runtime's OpenSSL was built on Ubuntu and only looks in
+# /usr/lib/ssl, which Arch, Fedora, openSUSE etc. lack. Find the host bundle.
+CA_BUNDLES = (
+    '/etc/ssl/certs/ca-certificates.crt',  # Debian/Ubuntu/Arch/Gentoo
+    '/etc/pki/tls/certs/ca-bundle.crt',    # Fedora/RHEL
+    '/etc/ssl/ca-bundle.pem',              # openSUSE
+    '/etc/ssl/cert.pem',                   # Arch/Alpine/macOS-style
+    '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+)
+
+
+def ssl_context():
+    context = ssl.create_default_context()
+    for name in ('SSL_CERT_FILE', 'SSL_CERT_DIR'):
+        if os.environ.get(name):
+            return context
+    for bundle in CA_BUNDLES:
+        if os.path.isfile(bundle):
+            try:
+                context.load_verify_locations(cafile=bundle)
+                break
+            except (OSError, ssl.SSLError):
+                continue
+    if os.path.isdir('/etc/ssl/certs'):
+        context.load_verify_locations(capath='/etc/ssl/certs')
+    return context
 
 
 class Cancelled(Exception):
@@ -262,7 +291,7 @@ class Installer:
             try:
                 self.check_cancel()
                 request = urllib.request.Request(url, headers={'User-Agent': 'Lynix-patch-setup/0.1'})
-                with urllib.request.urlopen(request, timeout=30) as response, partial.open('wb') as stream:
+                with urllib.request.urlopen(request, timeout=30, context=ssl_context()) as response, partial.open('wb') as stream:
                     total = int(response.headers.get('Content-Length', 0))
                     done = 0
                     while True:
